@@ -1,11 +1,11 @@
 (() => {
 'use strict';
-const KEEP = 48, BATCH = 8, MARGIN = 1400;
+const KEEP = 40, BATCH = 6, MARGIN = 1200;
 const $ = id => document.getElementById(id);
 const stream = $('stream'), top = $('top'), bottom = $('bottom'), q = $('q'), msg = $('msg');
 const prevBtn = $('prev'), nextBtn = $('next'), bar = document.querySelector('.bar');
 const ONE = 1n;
-let current = ONE, busy = false;
+let current = ONE, busy = false, lastY = 0, acc = 0, ticking = false, lastTrack = 0, tt = 0, cw = 0;
 
 // ---- deterministic generation: everything derives from the exact decimal string ----
 function hash(s, seed) {
@@ -55,10 +55,9 @@ function build(n) {
 }
 // Fit the complete number inside the card: size by width, wrap if more digits than one line holds.
 function fit(li) {
-  const num = li.querySelector('.num'), w = li.clientWidth - parseFloat(getComputedStyle(li).paddingLeft) * 2;
-  if (w <= 0) return;
-  const d = num.textContent.length, perLine = Math.min(d, 16);
-  num.style.fontSize = Math.max(14, Math.min(64, w / (perLine * 0.62))) + 'px';
+  if (!cw) { const c = stream.firstElementChild; if (!c) return; cw = c.clientWidth - parseFloat(getComputedStyle(c).paddingLeft) * 2; }
+  const num = li.querySelector('.num'), perLine = Math.min(num.textContent.length, 16);
+  num.style.fontSize = Math.max(12, Math.min(64, cw / (perLine * 0.62))) + 'px';
 }
 const fitAll = () => { for (const li of stream.children) fit(li); };
 
@@ -71,16 +70,18 @@ const last = () => BigInt(stream.lastElementChild.dataset.n);
 function appendBatch() {
   let n = last();
   for (let i = 0; i < BATCH; i++) { n += ONE; const li = build(n); stream.appendChild(li); fit(li); add(li); }
-  let drop = 0;
-  const startTop = stream.firstElementChild.offsetTop;
-  while (stream.children.length > KEEP) { io.unobserve(stream.firstElementChild); stream.firstElementChild.remove(); drop = 1; }
-  if (drop) window.scrollBy(0, stream.firstElementChild.offsetTop - startTop);
+  const extra = stream.children.length - KEEP;
+  if (extra > 0) {
+    const anchor = stream.children[extra], y0 = anchor.getBoundingClientRect().top;
+    for (let i = 0; i < extra; i++) { io.unobserve(stream.firstElementChild); stream.firstElementChild.remove(); }
+    window.scrollBy(0, anchor.getBoundingClientRect().top - y0); lastY = scrollY;
+  }
 }
 function prependBatch() {
   let n = first(); if (n <= ONE) return false;
   const anchor = stream.firstElementChild, y0 = anchor.getBoundingClientRect().top;
   for (let i = 0; i < BATCH && n > ONE; i++) { n -= ONE; const li = build(n); stream.insertBefore(li, stream.firstElementChild); fit(li); add(li); }
-  window.scrollBy(0, anchor.getBoundingClientRect().top - y0);
+  window.scrollBy(0, anchor.getBoundingClientRect().top - y0); lastY = scrollY;
   while (stream.children.length > KEEP) { io.unobserve(stream.lastElementChild); stream.lastElementChild.remove(); }
   return true;
 }
@@ -118,16 +119,27 @@ function setCurrent(n, replace) {
   const hash = '#/profile/' + s;
   if (location.hash !== hash) history[replace ? 'replaceState' : 'pushState'](null, '', hash);
 }
-let ticking = false;
 function track() {
-  const line = bar.offsetHeight + 24; let found = null;
+  const line = 80; let found = null;
   for (const li of stream.children) { if (li.getBoundingClientRect().bottom > line) { found = li; break; } }
   if (!found) return;
-  for (const c of stream.querySelectorAll('.current')) c.classList.remove('current');
-  found.classList.add('current');
+  const old = stream.querySelector('.current'); if (old !== found) { if (old) old.classList.remove('current'); found.classList.add('current'); }
   const n = BigInt(found.dataset.n); if (n !== current) setCurrent(n, true);
 }
-addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(() => { ticking = false; track(); }); } }, { passive: true });
+function onFrame() {
+  ticking = false;
+  const y = scrollY, dy = y - lastY; lastY = y;
+  acc = dy * acc > 0 ? acc + dy : dy;
+  if (y < 60 || document.activeElement === q || msg.classList.contains('err')) bar.classList.remove('hide');
+  else if (acc > 30) bar.classList.add('hide');
+  else if (acc < -30) bar.classList.remove('hide');
+  fill();
+  const now = performance.now();
+  if (now - lastTrack > 150) { lastTrack = now; track(); }
+  clearTimeout(tt); tt = setTimeout(track, 180);
+}
+addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(onFrame); } }, { passive: true });
+q.addEventListener('focus', () => bar.classList.remove('hide'));
 
 function go(n, push) { setMsg(''); jump(n, false); setCurrent(n, !push); requestAnimationFrame(track); }
 $('search').addEventListener('submit', e => {
@@ -154,7 +166,8 @@ function fromUrl() {
 }
 addEventListener('popstate', () => { const n = fromUrl(); jump(n, false); current = n; prevBtn.disabled = n <= ONE; });
 addEventListener('hashchange', () => { const n = fromUrl(); if (n !== current) { jump(n, false); current = n; prevBtn.disabled = n <= ONE; } });
-let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(fitAll, 80); });
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { cw = 0; fitAll(); }, 80); });
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+lastY = scrollY;
 const start = fromUrl(); jump(start, false); setCurrent(start, true);
 })();
